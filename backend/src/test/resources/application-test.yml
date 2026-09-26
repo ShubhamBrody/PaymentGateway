@@ -1,0 +1,13 @@
+spring:
+  datasource:
+    url: jdbc:h2:mem:payment-system-tests;DB_CLOSE_DELAY=-1
+    username: sa
+    password:
+  jpa:
+    hibernate:
+      ddl-auto: create-drop
+
+app:
+  security:
+    jwt:
+      secret: test-only-signing-key-not-for-use-outside-automated-tests

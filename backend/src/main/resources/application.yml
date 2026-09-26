@@ -1,0 +1,39 @@
+spring:
+  application:
+    name: payment-system
+  profiles:
+    default: local
+  jpa:
+    open-in-view: false
+    hibernate:
+      ddl-auto: none
+  jackson:
+    deserialization:
+      # Reject 10.5 for integer minor-unit amounts instead of silently truncating it to 10.
+      accept-float-as-int: false
+  mvc:
+    problemdetails:
+      enabled: true
+
+server:
+  address: ${SERVER_ADDRESS:127.0.0.1}
+  port: ${SERVER_PORT:8080}
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health
+  endpoint:
+    health:
+      show-details: never
+
+app:
+  security:
+    jwt:
+      secret: ${JWT_SECRET:}
+      issuer: ${JWT_ISSUER:payment-system}
+      audience: ${JWT_AUDIENCE:payment-system-api}
+      access-token-ttl: ${JWT_ACCESS_TOKEN_TTL:15m}
+  cors:
+    allowed-origins: ${CORS_ALLOWED_ORIGINS:http://localhost:3000,http://localhost:5173}
