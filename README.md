@@ -42,7 +42,7 @@ See [docs/relationship-map.md](docs/relationship-map.md) for the entities, table
 3. The API locks the payment row, saves a `QUEUED` attempt, commits, and only then queues the request and caches its status. It answers `202` with a `Location` header pointing to the status URL.
 4. A payment worker marks the attempt `PENDING`, commits, and sends the request to the bank.
 5. The bank replies on `bank:responses`. A worker locks the payment, records `SUCCEEDED` with a **receipt** or `DECLINED`, commits, updates the Redis status, and acknowledges the message.
-6. The client polls `GET /api/v1/payments/{id}/requests/{key}`, which is served from Redis, until the status is final.
+6. The client polls `GET /api/v1/payments/{id}/requests/{key}` until the status is final. It is served from Redis when possible and from H2 otherwise.
 
 **Idempotency.** Every retry of a request must reuse its key. A retry returns the original attempt with `Idempotent-Replayed: true`, and never creates a second attempt, even when many retries arrive at once. The same key with a different bank behaviour returns `409`. After a decline, the customer can pay again with a **new** key. Payment creation has its own `Idempotency-Key`.
 
@@ -59,7 +59,9 @@ See [docs/relationship-map.md](docs/relationship-map.md) for the entities, table
 | The bank replies twice, or a message is delivered twice | Status checks under a row lock make the second copy a no-op. |
 | The bank approves after the attempt failed | The reply is kept on `payments:dead-letters` for reconciliation instead of being dropped. |
 | A message keeps failing | After `max-deliveries`, it moves to `payments:dead-letters` so it cannot block the queue. |
-| Redis is briefly unavailable | Requests are still saved; status reads fall back to the database, and queued attempts are sent once Redis is back. |
+| Redis is down | Every status is saved in H2 before Redis is touched, so nothing is lost. Requests are still accepted as `QUEUED` and status reads come from H2. After a Redis error the API skips Redis for `redis-retry-after`, so answers stay fast instead of waiting on timeouts. The backend also starts without Redis. Once Redis is back, workers resume and queued attempts are sent. |
+| Redis comes back without its data | Each maintenance run recreates the consumer groups, and lost queue messages are requeued or resent from H2. |
+| Redis lost the latest status update | A cached status that is not final is read again from H2 after `status-recheck-after`, so a client never sees an old status for longer than that. Final statuses never change, so they are always served from Redis. |
 
 Messages are acknowledged only after their database transaction commits, so every step can safely run again.
 
@@ -140,7 +142,7 @@ Passwords are hashed with PBKDF2, which has no 72-byte limit like BCrypt. Tokens
 | Suite | Command | What it covers |
 | --- | --- | --- |
 | Backend unit | `.\mvnw.cmd test` in `backend` | Bank behaviour rules, queue message mapping, and the processor and request service with mocks, including that queueing happens only after commit. |
-| Backend behaviour | same | Real Redis (Testcontainers), workers driven step by step: one attempt per key under concurrent retries, a worker dying mid-message, a lost queue message, bank timeouts, duplicate replies, poison messages, stale cache writes, and cache misses. |
+| Backend behaviour | same | Real Redis (Testcontainers), workers driven step by step: one attempt per key under concurrent retries, a worker dying mid-message, a lost queue message, bank timeouts, duplicate replies, poison messages, stale cache writes, cache misses, Redis restarting without its data, and an outdated cached status. Another suite starts the backend with Redis down and checks that requests are accepted and answered from H2. |
 | Backend end to end | same | Real HTTP server, background workers, and Redis: a full journey with receipt, and concurrent merchants across every bank behaviour checked for consistency. |
 | Backend controllers, models, repositories | same | Routes, security, validation, error responses, relationships, and constraints. |
 | Frontend unit | `npm test` in `frontend` | Money parsing without floating point, polling, the API client, and components, including that Retry sends the same key. |
@@ -177,5 +179,5 @@ Merchant sign-up takes about 250 ms each because PBKDF2 hashing is deliberately 
 
 - H2 suits learning, not production. A real deployment needs PostgreSQL, versioned migrations, and database-specific tests.
 - The simulated bank holds scheduled replies in memory. If the backend stops, those replies are lost and the payment side retries with the same key, as it would with a real bank that never answered.
-- Dead letters are kept for investigation, but there is no reconciliation tool for them yet.
+- Dead letters are kept for investigation, but there is no reconciliation tool for them yet. They live only in Redis, so losing Redis data also loses them, including bank approvals that arrived after an attempt failed.
 - There is no rate limiting, refresh token, refund, settlement, or webhook support yet.
