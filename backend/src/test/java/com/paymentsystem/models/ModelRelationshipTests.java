@@ -9,6 +9,7 @@ import com.paymentsystem.dtos.PaymentResponse;
 import jakarta.persistence.EntityManager;
 import jakarta.persistence.PersistenceContext;
 import jakarta.persistence.PersistenceException;
+import java.util.List;
 import org.junit.jupiter.api.Test;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.test.context.ActiveProfiles;
@@ -44,6 +45,20 @@ class ModelRelationshipTests {
                 .extracting(PaymentAttempt::getBankCode)
                 .containsExactly("BANK01", "BANK02");
         assertThat(stored.getAttempts()).allSatisfy(attempt -> assertThat(attempt.getPayment()).isSameAs(stored));
+    }
+
+    @Test
+    void newRowsGetTimeOrderedUuidVersion7Ids() {
+        Merchant merchant = persistMerchant("merchant@example.com");
+        Payment payment = new Payment(merchant, 1000, "INR", null, null, "key-1");
+        PaymentAttempt attempt = payment.addAttempt("request-key-1", BankScenario.APPROVE, "BANK01");
+        entityManager.persist(payment);
+        Receipt receipt = new Receipt(payment, attempt, "BNK-1");
+        entityManager.persist(receipt);
+        entityManager.flush();
+
+        assertThat(List.of(merchant.getId(), payment.getId(), attempt.getId(), receipt.getId()))
+                .allSatisfy(id -> assertThat(id.version()).isEqualTo(7));
     }
 
     @Test
