@@ -45,12 +45,13 @@ classDiagram
         String orderReference
         String idempotencyKey
         long version
-        addAttempt(idempotencyKey, scenario) PaymentAttempt
+        addAttempt(idempotencyKey, scenario, bankCode) PaymentAttempt
     }
     class PaymentAttempt {
         UUID id
         String idempotencyKey
         BankScenario scenario
+        String bankCode
         PaymentAttemptStatus status
         String declineReason
         String bankReference
@@ -111,6 +112,7 @@ erDiagram
         uuid payment_id FK
         varchar idempotency_key
         varchar scenario
+        varchar bank_code
         varchar status
         int bank_request_count
         timestamp last_queued_at
@@ -135,6 +137,8 @@ erDiagram
 | `receipts` | Unique `payment_id`, `attempt_id`, and `receipt_number` | At most one receipt per payment and per attempt. |
 
 Every entity has a `version` column for optimistic locking, and every status change also takes a row lock on the payment, so changes to one payment run one at a time.
+
+Primary keys are time-ordered UUIDv7 values. New rows land at the end of each index, so at millions of rows only recent index pages need to stay in the database cache.
 
 ## Object Example
 
@@ -189,8 +193,8 @@ stateDiagram-v2
 | Stream | Consumer group | Message | Written by | Read by |
 | --- | --- | --- | --- | --- |
 | `payments:requests` | `payment-workers` | `PaymentRequestMessage` (attempt, payment, key) | API, recovery job | Payment workers |
-| `bank:requests` | `bank-simulator` | `BankRequest` (bank key, amount, scenario) | Payment workers | Simulated bank |
-| `bank:responses` | `payment-workers` | `BankResponse` (bank key, outcome, bank reference) | Simulated bank | Payment workers |
+| `bank:requests` | `bank-simulator` | `BankRequest` (bank key, customer's bank, amount, scenario) | Payment workers | Simulated banks |
+| `bank:responses` | `payment-workers` | `BankResponse` (bank key, outcome, bank reference) | Simulated banks | Payment workers |
 | `payments:dead-letters` | none | Original fields plus source stream and reason | Workers | People investigating |
 
 The bank key is `{paymentId}:{idempotencyKey}`, identical on every retry, so the bank can recognise a repeated request.
@@ -201,9 +205,9 @@ The bank key is `{paymentId}:{idempotencyKey}`, identical on every retry, so the
 | --- | --- | --- |
 | `Merchant` | `MerchantResponse` | Leaves out `passwordHash` and `version`. |
 | `Payment` | `PaymentResponse` | Leaves out `merchant`, `idempotencyKey`, `attempts`, and `version`. |
-| `PaymentAttempt` | `PaymentAttemptResponse` | Parent becomes `paymentId`; adds `receiptNumber`; leaves out queue timestamps and `version`. |
+| `PaymentAttempt` | `PaymentAttemptResponse` | Parent becomes `paymentId`; `bankCode` becomes `bank`; adds `receiptNumber`; leaves out queue timestamps and `version`. |
 | `Receipt` | `ReceiptResponse` | Parents become `paymentId` and `attemptId`. |
-| Redis status | `PaymentRequestStatusResponse` | Adds `source`: `cache` or `database`. |
+| Redis status | `PaymentRequestStatusResponse` | Includes the `bank` that answered; adds `source`: `cache` or `database`. |
 
 | Request DTO | Used by | Creates or changes |
 | --- | --- | --- |
