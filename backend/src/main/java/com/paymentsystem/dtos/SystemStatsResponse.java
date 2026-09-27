@@ -10,6 +10,7 @@ public record SystemStatsResponse(
         List<QueueStats> queues,
         Map<PaymentStatus, Long> payments,
         Map<PaymentAttemptStatus, Long> attempts,
+        Map<String, Map<PaymentAttemptStatus, Long>> attemptsByBank,
         long receipts,
         Instant generatedAt) {
 

@@ -11,6 +11,7 @@ public record PaymentRequestStatusResponse(
         UUID paymentId,
         String idempotencyKey,
         BankScenario scenario,
+        String bank,
         PaymentAttemptStatus status,
         String declineReason,
         int bankRequestCount,

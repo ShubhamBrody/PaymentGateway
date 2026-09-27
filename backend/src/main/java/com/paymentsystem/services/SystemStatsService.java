@@ -12,6 +12,7 @@ import java.time.Instant;
 import java.util.EnumMap;
 import java.util.List;
 import java.util.Map;
+import java.util.TreeMap;
 import lombok.RequiredArgsConstructor;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Service;
@@ -37,6 +38,7 @@ public class SystemStatsService {
                 queues,
                 counts(paymentRepository.countByStatus(), PaymentStatus.class),
                 counts(attemptRepository.countByStatus(), PaymentAttemptStatus.class),
+                countsByBank(attemptRepository.countByBankAndStatus()),
                 receiptRepository.count(),
                 Instant.now());
     }
@@ -64,5 +66,14 @@ public class SystemStatsService {
             counts.put(type.cast(row[0]), (Long) row[1]);
         }
         return counts;
+    }
+
+    private static Map<String, Map<PaymentAttemptStatus, Long>> countsByBank(List<Object[]> rows) {
+        Map<String, Map<PaymentAttemptStatus, Long>> byBank = new TreeMap<>();
+        for (Object[] row : rows) {
+            byBank.computeIfAbsent((String) row[0], bank -> counts(List.of(), PaymentAttemptStatus.class))
+                    .put((PaymentAttemptStatus) row[1], (Long) row[2]);
+        }
+        return byBank;
     }
 }

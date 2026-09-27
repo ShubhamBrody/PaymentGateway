@@ -1,14 +1,17 @@
 package com.paymentsystem.services;
 
+import com.paymentsystem.bank.BankDirectory;
 import com.paymentsystem.config.ProcessingProperties;
 import com.paymentsystem.dtos.CreatePaymentAttemptRequest;
 import com.paymentsystem.dtos.PaymentAttemptResponse;
 import com.paymentsystem.dtos.PaymentRequestStatusResponse;
 import com.paymentsystem.dtos.ReceiptResponse;
 import com.paymentsystem.exceptions.ConflictException;
+import com.paymentsystem.exceptions.InvalidRequestException;
 import com.paymentsystem.exceptions.ResourceNotFoundException;
 import com.paymentsystem.idempotency.PaymentRequestStatus;
 import com.paymentsystem.idempotency.PaymentRequestStatusStore;
+import com.paymentsystem.models.BankScenario;
 import com.paymentsystem.models.Payment;
 import com.paymentsystem.models.PaymentAttempt;
 import com.paymentsystem.models.PaymentAttemptStatus;
@@ -46,19 +49,22 @@ public class PaymentRequestService {
     private final PaymentRequestStatusStore statusStore;
     private final TransactionTemplate transactionTemplate;
     private final ProcessingProperties properties;
+    private final BankDirectory bankDirectory;
 
     // Set after a Redis error so the next calls go straight to the database instead of each waiting on Redis.
     private volatile Instant skipRedisUntil = Instant.MIN;
 
     public Submission submit(
             UUID merchantId, UUID paymentId, String idempotencyKey, CreatePaymentAttemptRequest request) {
+        String bank = bankCode(request.bank());
         Optional<PaymentRequestStatus> cached = findCached(paymentId, idempotencyKey);
         if (cached.isPresent()) {
-            PaymentRequestStatus status = requireSameRequest(cached.get(), merchantId, request);
+            PaymentRequestStatus status = requireSameRequest(cached.get(), merchantId, request.scenario(), bank);
             return new Submission(status.toResponse("cache"), true);
         }
 
-        Recorded recorded = transactionTemplate.execute(tx -> record(merchantId, paymentId, idempotencyKey, request));
+        Recorded recorded = transactionTemplate.execute(
+                tx -> record(merchantId, paymentId, idempotencyKey, request.scenario(), bank));
         if (recorded.created()) {
             publishAfterCommit(recorded.status());
             return new Submission(recorded.status().toResponse("database"), false);
@@ -95,14 +101,14 @@ public class PaymentRequestService {
     }
 
     private Recorded record(
-            UUID merchantId, UUID paymentId, String idempotencyKey, CreatePaymentAttemptRequest request) {
+            UUID merchantId, UUID paymentId, String idempotencyKey, BankScenario scenario, String bank) {
         // The row lock also serializes concurrent retries of one key, so only the first creates an attempt.
         Payment payment = paymentRepository.findForUpdateByIdAndMerchantId(paymentId, merchantId)
                 .orElseThrow(() -> new ResourceNotFoundException("Payment not found"));
         Optional<PaymentAttempt> existing = attemptRepository.findByPaymentIdAndIdempotencyKey(paymentId, idempotencyKey);
         if (existing.isPresent()) {
             PaymentRequestStatus status = PaymentRequestStatus.of(existing.get(), receiptNumber(existing.get()));
-            return new Recorded(requireSameRequest(status, merchantId, request), false);
+            return new Recorded(requireSameRequest(status, merchantId, scenario, bank), false);
         }
         String conflict = switch (payment.getStatus()) {
             case AWAITING_PAYMENT -> null;
@@ -113,7 +119,7 @@ public class PaymentRequestService {
         if (conflict != null) {
             throw new ConflictException(conflict);
         }
-        PaymentAttempt attempt = payment.addAttempt(idempotencyKey, request.scenario());
+        PaymentAttempt attempt = payment.addAttempt(idempotencyKey, scenario, bank);
         attempt.setLastQueuedAt(Instant.now());
         payment.setStatus(PaymentStatus.PROCESSING);
         attemptRepository.saveAndFlush(attempt);
@@ -169,12 +175,21 @@ public class PaymentRequestService {
                 problem, properties.redisRetryAfter().toMillis(), ex.toString());
     }
 
+    private String bankCode(String requested) {
+        if (requested == null) {
+            return bankDirectory.defaultBank().code();
+        }
+        return bankDirectory.find(requested)
+                .orElseThrow(() -> new InvalidRequestException("Unknown bank " + requested))
+                .code();
+    }
+
     private static PaymentRequestStatus requireSameRequest(
-            PaymentRequestStatus status, UUID merchantId, CreatePaymentAttemptRequest request) {
+            PaymentRequestStatus status, UUID merchantId, BankScenario scenario, String bank) {
         if (!status.merchantId().equals(merchantId)) {
             throw new ResourceNotFoundException("Payment not found");
         }
-        if (status.scenario() != request.scenario()) {
+        if (status.scenario() != scenario || !bank.equals(status.bank())) {
             throw new ConflictException("This Idempotency-Key was already used with a different payment request");
         }
         return status;

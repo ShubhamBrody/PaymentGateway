@@ -86,7 +86,7 @@ class PaymentProcessorTests {
         Merchant merchant = withId(new Merchant("Demo Store", "merchant@example.com", "hash"));
         payment = withId(new Payment(merchant, 1000, "INR", null, null, "payment-key"));
         payment.setStatus(PaymentStatus.PROCESSING);
-        attempt = withId(payment.addAttempt(REQUEST_KEY, BankScenario.APPROVE));
+        attempt = withId(payment.addAttempt(REQUEST_KEY, BankScenario.APPROVE, "BANK01"));
         attempt.setLastQueuedAt(Instant.now());
         lenient().when(paymentRepository.findForUpdateById(payment.getId())).thenReturn(Optional.of(payment));
         lenient().when(attemptRepository.findByIdAndPaymentId(attempt.getId(), payment.getId()))

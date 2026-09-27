@@ -20,6 +20,7 @@ import lombok.AccessLevel;
 import lombok.Getter;
 import lombok.NoArgsConstructor;
 import lombok.Setter;
+import org.hibernate.annotations.ColumnDefault;
 import org.hibernate.annotations.CreationTimestamp;
 
 @Entity
@@ -49,6 +50,11 @@ public class PaymentAttempt {
     @Enumerated(EnumType.STRING)
     @Column(nullable = false, length = 30, updatable = false)
     private BankScenario scenario;
+
+    // The customer's bank this attempt is sent to. The default only fills rows created before banks existed.
+    @ColumnDefault("'BANK01'")
+    @Column(name = "bank_code", nullable = false, length = 10, updatable = false)
+    private String bankCode;
 
     @Setter
     @Enumerated(EnumType.STRING)
@@ -84,10 +90,11 @@ public class PaymentAttempt {
     private long version;
 
     // Created through Payment.addAttempt so both sides of the relationship stay in sync.
-    PaymentAttempt(Payment payment, String idempotencyKey, BankScenario scenario) {
+    PaymentAttempt(Payment payment, String idempotencyKey, BankScenario scenario, String bankCode) {
         this.payment = payment;
         this.idempotencyKey = idempotencyKey;
         this.scenario = scenario;
+        this.bankCode = bankCode;
         this.status = PaymentAttemptStatus.QUEUED;
     }
 }

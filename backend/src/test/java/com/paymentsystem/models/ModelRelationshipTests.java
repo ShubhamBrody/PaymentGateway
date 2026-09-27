@@ -26,10 +26,10 @@ class ModelRelationshipTests {
     void paymentCascadesAttemptsAndReloadsRelationships() {
         Merchant merchant = persistMerchant("merchant@example.com");
         Payment payment = new Payment(merchant, 1000, "INR", "Test order", "order-123", "key-1");
-        PaymentAttempt declined = payment.addAttempt("request-key-1", BankScenario.DECLINE);
+        PaymentAttempt declined = payment.addAttempt("request-key-1", BankScenario.DECLINE, "BANK01");
         declined.setStatus(PaymentAttemptStatus.DECLINED);
         declined.setDeclineReason("insufficient_funds");
-        payment.addAttempt("request-key-2", BankScenario.APPROVE);
+        payment.addAttempt("request-key-2", BankScenario.APPROVE, "BANK02");
         entityManager.persist(payment);
         entityManager.flush();
         entityManager.clear();
@@ -40,6 +40,9 @@ class ModelRelationshipTests {
         assertThat(stored.getAttempts())
                 .extracting(PaymentAttempt::getStatus)
                 .containsExactly(PaymentAttemptStatus.DECLINED, PaymentAttemptStatus.QUEUED);
+        assertThat(stored.getAttempts())
+                .extracting(PaymentAttempt::getBankCode)
+                .containsExactly("BANK01", "BANK02");
         assertThat(stored.getAttempts()).allSatisfy(attempt -> assertThat(attempt.getPayment()).isSameAs(stored));
     }
 
@@ -47,7 +50,7 @@ class ModelRelationshipTests {
     void entitiesMapToResponsesWithoutSecrets() {
         Merchant merchant = persistMerchant("merchant@example.com");
         Payment payment = new Payment(merchant, 2500, "INR", null, null, "key-1");
-        PaymentAttempt attempt = payment.addAttempt("request-key-1", BankScenario.APPROVE);
+        PaymentAttempt attempt = payment.addAttempt("request-key-1", BankScenario.APPROVE, "BANK07");
         entityManager.persist(payment);
         entityManager.flush();
 
@@ -58,6 +61,7 @@ class ModelRelationshipTests {
         PaymentAttemptResponse response = PaymentAttemptResponse.from(attempt, null);
         assertThat(response.paymentId()).isEqualTo(payment.getId());
         assertThat(response.idempotencyKey()).isEqualTo("request-key-1");
+        assertThat(response.bank()).isEqualTo("BANK07");
         assertThat(response.status()).isEqualTo(PaymentAttemptStatus.QUEUED);
     }
 
@@ -66,13 +70,13 @@ class ModelRelationshipTests {
         Merchant merchant = persistMerchant("merchant@example.com");
         Payment first = new Payment(merchant, 1000, "INR", null, null, "key-1");
         Payment second = new Payment(merchant, 1000, "INR", null, null, "key-2");
-        first.addAttempt("shared-request-key", BankScenario.APPROVE);
-        second.addAttempt("shared-request-key", BankScenario.APPROVE);
+        first.addAttempt("shared-request-key", BankScenario.APPROVE, "BANK01");
+        second.addAttempt("shared-request-key", BankScenario.APPROVE, "BANK01");
         entityManager.persist(first);
         entityManager.persist(second);
         entityManager.flush();
 
-        first.addAttempt("shared-request-key", BankScenario.APPROVE);
+        first.addAttempt("shared-request-key", BankScenario.APPROVE, "BANK01");
         assertThatThrownBy(entityManager::flush).isInstanceOf(PersistenceException.class);
     }
 
@@ -80,8 +84,8 @@ class ModelRelationshipTests {
     void aPaymentCanHaveOnlyOneReceipt() {
         Merchant merchant = persistMerchant("merchant@example.com");
         Payment payment = new Payment(merchant, 1000, "INR", null, null, "key-1");
-        PaymentAttempt firstAttempt = payment.addAttempt("request-key-1", BankScenario.APPROVE);
-        PaymentAttempt secondAttempt = payment.addAttempt("request-key-2", BankScenario.APPROVE);
+        PaymentAttempt firstAttempt = payment.addAttempt("request-key-1", BankScenario.APPROVE, "BANK01");
+        PaymentAttempt secondAttempt = payment.addAttempt("request-key-2", BankScenario.APPROVE, "BANK01");
         entityManager.persist(payment);
         Receipt receipt = new Receipt(payment, firstAttempt, "BNK-1");
         entityManager.persist(receipt);

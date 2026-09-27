@@ -38,7 +38,8 @@ import org.springframework.test.context.DynamicPropertySource;
 @DirtiesContext
 class RedisDownBehaviourTests {
 
-    private static final CreatePaymentAttemptRequest APPROVE = new CreatePaymentAttemptRequest(BankScenario.APPROVE);
+    private static final CreatePaymentAttemptRequest APPROVE =
+            new CreatePaymentAttemptRequest(BankScenario.APPROVE, null);
 
     @DynamicPropertySource
     static void redisIsDown(DynamicPropertyRegistry registry) throws IOException {

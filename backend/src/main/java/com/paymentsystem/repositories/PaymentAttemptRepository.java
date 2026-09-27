@@ -44,6 +44,9 @@ public interface PaymentAttemptRepository extends JpaRepository<PaymentAttempt, 
     @Query("select a.status, count(a) from PaymentAttempt a group by a.status")
     List<Object[]> countByStatus();
 
+    @Query("select a.bankCode, a.status, count(a) from PaymentAttempt a group by a.bankCode, a.status")
+    List<Object[]> countByBankAndStatus();
+
     long countByPaymentId(UUID paymentId);
 
     long countByStatus(PaymentAttemptStatus status);

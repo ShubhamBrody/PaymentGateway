@@ -360,7 +360,7 @@ class PaymentPipelineBehaviourTests {
         // As if Redis was restored from an older snapshot: the final status is gone and PENDING is back.
         redis.delete(PaymentRequestStatusStore.key(paymentId, "request-stale-cache"));
         statusStore.save(new PaymentRequestStatus(
-                attempt.getId(), paymentId, merchantId, "request-stale-cache", BankScenario.APPROVE,
+                attempt.getId(), paymentId, merchantId, "request-stale-cache", BankScenario.APPROVE, "BANK01",
                 PaymentAttemptStatus.PENDING, null, 1, null, attempt.getVersion() - 1, Instant.now().minusSeconds(10)));
 
         PaymentRequestStatusResponse corrected =
@@ -372,6 +372,23 @@ class PaymentPipelineBehaviourTests {
         assertThat(corrected.source()).isEqualTo("database");
         assertThat(cachedAgain.status()).isEqualTo(PaymentAttemptStatus.SUCCEEDED);
         assertThat(cachedAgain.source()).isEqualTo("cache");
+    }
+
+    @Test
+    @DisplayName("A payment request goes to the customer's bank, and its status names that bank")
+    void aPaymentRequestIsSentToTheCustomersBank() {
+        paymentRequestService.submit(merchantId, paymentId, "request-bank-07",
+                new CreatePaymentAttemptRequest(BankScenario.APPROVE, "BANK07"));
+
+        queueWorkers.pollOnce(Queues.PAYMENT_REQUESTS, "worker-a");
+        MapRecord<String, Object, Object> sent =
+                redis.opsForStream().range(Queues.BANK_REQUESTS, Range.unbounded()).getFirst();
+        assertThat(sent.getValue()).containsEntry("bank", "BANK07");
+
+        driveUntilFinal("request-bank-07", false);
+        assertThat(attempt("request-bank-07").getBankCode()).isEqualTo("BANK07");
+        assertThat(paymentRequestService.getStatus(merchantId, paymentId, "request-bank-07").bank())
+                .isEqualTo("BANK07");
     }
 
     // Loses everything Redis holds: queues, consumer groups, pending messages, and cached statuses.
@@ -389,7 +406,8 @@ class PaymentPipelineBehaviourTests {
     }
 
     private PaymentRequestService.Submission submit(String key, BankScenario scenario) {
-        return paymentRequestService.submit(merchantId, paymentId, key, new CreatePaymentAttemptRequest(scenario));
+        return paymentRequestService.submit(
+                merchantId, paymentId, key, new CreatePaymentAttemptRequest(scenario, null));
     }
 
     // Plays the part of the background workers until the attempt is final.
@@ -423,7 +441,7 @@ class PaymentPipelineBehaviourTests {
 
     private PaymentRequestStatus status(PaymentAttemptStatus status, long version) {
         return new PaymentRequestStatus(
-                UUID.randomUUID(), paymentId, merchantId, "request-versioned", BankScenario.APPROVE, status,
+                UUID.randomUUID(), paymentId, merchantId, "request-versioned", BankScenario.APPROVE, "BANK01", status,
                 null, 1, null, version, Instant.now());
     }
 

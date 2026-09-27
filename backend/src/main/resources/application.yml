@@ -66,5 +66,9 @@ app:
     redis-retry-after: 5s
   bank:
     simulator-enabled: ${BANK_SIMULATOR_ENABLED:true}
+    # Customers pay from BANK01 to BANK30. Each bank answers at its own speed and declines its own share of RANDOM.
+    banks: ${BANK_COUNT:30}
     approve-delay: 300ms
     slow-delay: 3s
+    # How long a bank remembers a request, so a retry with the same key gets the same answer.
+    memory-ttl: 24h

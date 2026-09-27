@@ -11,26 +11,29 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Component;
 
-// Stands in for an external bank. It remembers each request by its key, so a retried request gets the same answer.
+// Stands in for the customers' banks. Each request goes to the bank it names, which answers at that bank's speed.
+// A bank remembers each request by its key, so a retried request gets the same answer.
 @Slf4j
 @Component
 @RequiredArgsConstructor
 public class SimulatedBank {
 
-    private static final Duration MEMORY_TTL = Duration.ofHours(24);
-
     private final StringRedisTemplate redis;
     private final PaymentQueue paymentQueue;
     private final BankSimulatorProperties properties;
+    private final BankDirectory directory;
 
     public void handle(BankRequest request) {
+        // Requests queued before banks existed carry no bank and go to the first one.
+        BankDirectory.Bank bank = directory.find(request.bank()).orElseGet(directory::defaultBank);
         String deliveriesKey = "bank:deliveries:" + request.bankKey();
         long deliveryNumber = redis.opsForValue().increment(deliveriesKey);
-        redis.expire(deliveriesKey, MEMORY_TTL);
+        redis.expire(deliveriesKey, properties.memoryTtl());
 
-        StoredDecision stored = decisionFor(request);
+        StoredDecision stored = decisionFor(request, bank);
         BankBehavior.ReplyPlan plan = BankBehavior.plan(
-                stored.decision(), deliveryNumber, properties.approveDelay(), properties.slowDelay());
+                stored.decision(), deliveryNumber,
+                bank.scaled(properties.approveDelay()), bank.scaled(properties.slowDelay()));
         BankResponse response = new BankResponse(
                 request.bankKey(),
                 request.attemptId(),
@@ -43,15 +46,16 @@ public class SimulatedBank {
         }
     }
 
-    private StoredDecision decisionFor(BankRequest request) {
+    private StoredDecision decisionFor(BankRequest request, BankDirectory.Bank bank) {
         String key = "bank:decision:" + request.bankKey();
-        BankBehavior.Decision fresh = BankBehavior.decide(request.scenario(), ThreadLocalRandom.current());
+        BankBehavior.Decision fresh =
+                BankBehavior.decide(request.scenario(), bank.declineRate(), ThreadLocalRandom.current());
         String candidate = String.join("|",
                 fresh.scenario().name(),
                 fresh.outcome().name(),
                 newBankReference(),
                 fresh.declineReason() == null ? "" : fresh.declineReason());
-        redis.opsForValue().setIfAbsent(key, candidate, MEMORY_TTL);
+        redis.opsForValue().setIfAbsent(key, candidate, properties.memoryTtl());
         String[] parts = redis.opsForValue().get(key).split("\\|", -1);
         BankBehavior.Decision decision = new BankBehavior.Decision(
                 BankScenario.valueOf(parts[0]), BankOutcome.valueOf(parts[1]), parts[3].isEmpty() ? null : parts[3]);

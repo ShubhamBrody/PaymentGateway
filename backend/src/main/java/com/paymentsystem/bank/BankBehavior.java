@@ -15,8 +15,10 @@ public final class BankBehavior {
     private BankBehavior() {
     }
 
-    public static Decision decide(BankScenario requested, RandomGenerator random) {
-        BankScenario scenario = requested == BankScenario.RANDOM ? randomScenario(random.nextDouble()) : requested;
+    public static Decision decide(BankScenario requested, double declineRate, RandomGenerator random) {
+        BankScenario scenario = requested == BankScenario.RANDOM
+                ? randomScenario(random.nextDouble(), declineRate)
+                : requested;
         return scenario == BankScenario.DECLINE
                 ? new Decision(scenario, BankOutcome.DECLINED, "insufficient_funds")
                 : new Decision(scenario, BankOutcome.APPROVED, null);
@@ -34,8 +36,9 @@ public final class BankBehavior {
         };
     }
 
-    static BankScenario randomScenario(double roll) {
-        if (roll < 0.80) {
+    // The bank's decline rate splits the first 92%; slow, lost, and duplicate replies stay at 5%, 2%, and 1%.
+    static BankScenario randomScenario(double roll, double declineRate) {
+        if (roll < 0.92 - declineRate) {
             return BankScenario.APPROVE;
         }
         if (roll < 0.92) {

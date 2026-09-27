@@ -16,6 +16,7 @@ class BankBehaviorTests {
 
     private static final Duration APPROVE_DELAY = Duration.ofMillis(300);
     private static final Duration SLOW_DELAY = Duration.ofSeconds(3);
+    private static final double DECLINE_RATE = 0.12;
 
     @ParameterizedTest
     @CsvSource({
@@ -26,14 +27,20 @@ class BankBehaviorTests {
             "0.99, DUPLICATE_REPLY", "0.9999, DUPLICATE_REPLY"
     })
     void randomScenarioFollowsTheConfiguredWeights(double roll, BankScenario expected) {
-        assertThat(BankBehavior.randomScenario(roll)).isEqualTo(expected);
+        assertThat(BankBehavior.randomScenario(roll, DECLINE_RATE)).isEqualTo(expected);
+    }
+
+    @ParameterizedTest
+    @CsvSource({"0.70, APPROVE", "0.75, DECLINE", "0.91, DECLINE", "0.93, SLOW_APPROVE", "0.98, TIMEOUT_THEN_APPROVE"})
+    void aBankThatDeclinesMoreApprovesLessButKeepsTheOtherReplies(double roll, BankScenario expected) {
+        assertThat(BankBehavior.randomScenario(roll, 0.20)).isEqualTo(expected);
     }
 
     @Test
     void randomIsResolvedToAConcreteScenarioOnce() {
         RandomGenerator alwaysZero = () -> 0L;
 
-        BankBehavior.Decision decision = BankBehavior.decide(BankScenario.RANDOM, alwaysZero);
+        BankBehavior.Decision decision = BankBehavior.decide(BankScenario.RANDOM, DECLINE_RATE, alwaysZero);
 
         assertThat(decision.scenario()).isEqualTo(BankScenario.APPROVE);
         assertThat(decision.outcome()).isEqualTo(BankOutcome.APPROVED);
@@ -41,7 +48,7 @@ class BankBehaviorTests {
 
     @Test
     void declineScenarioIsDeclinedWithAReason() {
-        BankBehavior.Decision decision = BankBehavior.decide(BankScenario.DECLINE, () -> 0L);
+        BankBehavior.Decision decision = BankBehavior.decide(BankScenario.DECLINE, DECLINE_RATE, () -> 0L);
 
         assertThat(decision.outcome()).isEqualTo(BankOutcome.DECLINED);
         assertThat(decision.declineReason()).isEqualTo("insufficient_funds");
@@ -50,7 +57,7 @@ class BankBehaviorTests {
     @ParameterizedTest
     @EnumSource(value = BankScenario.class, names = {"APPROVE", "SLOW_APPROVE", "TIMEOUT_THEN_APPROVE", "DUPLICATE_REPLY"})
     void approvingScenariosApprove(BankScenario scenario) {
-        assertThat(BankBehavior.decide(scenario, () -> 0L).outcome()).isEqualTo(BankOutcome.APPROVED);
+        assertThat(BankBehavior.decide(scenario, DECLINE_RATE, () -> 0L).outcome()).isEqualTo(BankOutcome.APPROVED);
     }
 
     @ParameterizedTest
@@ -66,7 +73,7 @@ class BankBehaviorTests {
     })
     void replyPlanDependsOnScenarioAndDelivery(
             BankScenario scenario, long delivery, int expectedReplies, long expectedDelayMillis) {
-        BankBehavior.Decision decision = BankBehavior.decide(scenario, () -> 0L);
+        BankBehavior.Decision decision = BankBehavior.decide(scenario, DECLINE_RATE, () -> 0L);
 
         BankBehavior.ReplyPlan plan = BankBehavior.plan(decision, delivery, APPROVE_DELAY, SLOW_DELAY);
 

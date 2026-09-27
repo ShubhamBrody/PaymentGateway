@@ -13,10 +13,13 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
+import com.paymentsystem.bank.BankDirectory;
+import com.paymentsystem.config.BankSimulatorProperties;
 import com.paymentsystem.config.ProcessingProperties;
 import com.paymentsystem.dtos.CreatePaymentAttemptRequest;
 import com.paymentsystem.dtos.PaymentRequestStatusResponse;
 import com.paymentsystem.exceptions.ConflictException;
+import com.paymentsystem.exceptions.InvalidRequestException;
 import com.paymentsystem.exceptions.ResourceNotFoundException;
 import com.paymentsystem.idempotency.PaymentRequestStatus;
 import com.paymentsystem.idempotency.PaymentRequestStatusStore;
@@ -50,7 +53,8 @@ import org.springframework.transaction.support.TransactionTemplate;
 class PaymentRequestServiceTests {
 
     private static final String REQUEST_KEY = "request-key-1";
-    private static final CreatePaymentAttemptRequest APPROVE = new CreatePaymentAttemptRequest(BankScenario.APPROVE);
+    private static final CreatePaymentAttemptRequest APPROVE =
+            new CreatePaymentAttemptRequest(BankScenario.APPROVE, null);
 
     @Mock
     private PaymentRepository paymentRepository;
@@ -72,6 +76,8 @@ class PaymentRequestServiceTests {
             false, 1, 50, Duration.ofMillis(50), Duration.ofSeconds(1), Duration.ofSeconds(15), 5,
             Duration.ofSeconds(15), Duration.ofSeconds(8), 3, Duration.ofHours(24), Duration.ofSeconds(2),
             Duration.ofSeconds(5));
+    private final BankDirectory bankDirectory = new BankDirectory(
+            new BankSimulatorProperties(true, 30, Duration.ofMillis(300), Duration.ofSeconds(3), Duration.ofHours(24)));
     private PaymentRequestService service;
     private Merchant merchant;
     private Payment payment;
@@ -80,7 +86,7 @@ class PaymentRequestServiceTests {
     void setUp() {
         service = new PaymentRequestService(
                 paymentRepository, attemptRepository, receiptRepository, paymentQueue, statusStore,
-                new TransactionTemplate(new RecordingTransactionManager(events)), properties);
+                new TransactionTemplate(new RecordingTransactionManager(events)), properties, bankDirectory);
         merchant = withId(new Merchant("Demo Store", "merchant@example.com", "hash"));
         payment = withId(new Payment(merchant, 1000, "INR", null, null, "payment-key"));
         lenient().when(paymentRepository.findForUpdateByIdAndMerchantId(payment.getId(), merchant.getId()))
@@ -97,9 +103,34 @@ class PaymentRequestServiceTests {
 
         assertThat(submission.replayed()).isFalse();
         assertThat(submission.status().status()).isEqualTo(PaymentAttemptStatus.QUEUED);
+        assertThat(submission.status().bank()).isEqualTo("BANK01");
         assertThat(payment.getStatus()).isEqualTo(PaymentStatus.PROCESSING);
         assertThat(events).containsExactly("commit", "queue");
         verify(statusStore).save(any());
+    }
+
+    @Test
+    void requestIsSentToTheCustomersBank() {
+        PaymentRequestService.Submission submission =
+                submit(new CreatePaymentAttemptRequest(BankScenario.APPROVE, "BANK07"));
+
+        assertThat(submission.status().bank()).isEqualTo("BANK07");
+        assertThat(payment.getAttempts().getFirst().getBankCode()).isEqualTo("BANK07");
+    }
+
+    @Test
+    void unknownBankIsRejectedBeforeAnythingIsStored() {
+        assertThatThrownBy(() -> submit(new CreatePaymentAttemptRequest(BankScenario.APPROVE, "BANK99")))
+                .isInstanceOf(InvalidRequestException.class);
+        verifyNoInteractions(statusStore, paymentRepository, attemptRepository, paymentQueue);
+    }
+
+    @Test
+    void sameKeyWithADifferentBankIsAConflict() {
+        when(statusStore.find(payment.getId(), REQUEST_KEY)).thenReturn(Optional.of(cached(merchant.getId())));
+
+        assertThatThrownBy(() -> submit(new CreatePaymentAttemptRequest(BankScenario.APPROVE, "BANK02")))
+                .isInstanceOf(ConflictException.class);
     }
 
     @Test
@@ -117,7 +148,7 @@ class PaymentRequestServiceTests {
     void sameKeyWithADifferentScenarioIsAConflict() {
         when(statusStore.find(payment.getId(), REQUEST_KEY)).thenReturn(Optional.of(cached(merchant.getId())));
 
-        assertThatThrownBy(() -> submit(new CreatePaymentAttemptRequest(BankScenario.DECLINE)))
+        assertThatThrownBy(() -> submit(new CreatePaymentAttemptRequest(BankScenario.DECLINE, null)))
                 .isInstanceOf(ConflictException.class);
     }
 
@@ -141,7 +172,7 @@ class PaymentRequestServiceTests {
     @Test
     void cacheOutageFallsBackToTheDatabaseCopy() {
         when(statusStore.find(payment.getId(), REQUEST_KEY)).thenThrow(new RedisConnectionFailureException("down"));
-        PaymentAttempt existing = withId(payment.addAttempt(REQUEST_KEY, BankScenario.APPROVE));
+        PaymentAttempt existing = withId(payment.addAttempt(REQUEST_KEY, BankScenario.APPROVE, "BANK01"));
         when(attemptRepository.findByPaymentIdAndIdempotencyKey(payment.getId(), REQUEST_KEY))
                 .thenReturn(Optional.of(existing));
 
@@ -157,7 +188,7 @@ class PaymentRequestServiceTests {
     void nonFinalCopyThatIsNoLongerRecentIsReadAgainFromTheDatabase() {
         when(statusStore.find(payment.getId(), REQUEST_KEY)).thenReturn(Optional.of(
                 cached(merchant.getId(), PaymentAttemptStatus.PENDING, Instant.now().minusSeconds(10))));
-        PaymentAttempt attempt = withId(payment.addAttempt(REQUEST_KEY, BankScenario.APPROVE));
+        PaymentAttempt attempt = withId(payment.addAttempt(REQUEST_KEY, BankScenario.APPROVE, "BANK01"));
         attempt.setStatus(PaymentAttemptStatus.DECLINED);
         when(attemptRepository.findByPaymentIdAndIdempotencyKeyAndPaymentMerchantId(
                 payment.getId(), REQUEST_KEY, merchant.getId())).thenReturn(Optional.of(attempt));
@@ -218,7 +249,7 @@ class PaymentRequestServiceTests {
 
     private PaymentRequestStatus cached(UUID merchantId, PaymentAttemptStatus status, Instant updatedAt) {
         return new PaymentRequestStatus(
-                UUID.randomUUID(), payment.getId(), merchantId, REQUEST_KEY, BankScenario.APPROVE,
+                UUID.randomUUID(), payment.getId(), merchantId, REQUEST_KEY, BankScenario.APPROVE, "BANK01",
                 status, null, 1, null, 1, updatedAt);
     }
 

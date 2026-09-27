@@ -99,8 +99,8 @@ public class Payment {
         this.status = PaymentStatus.AWAITING_PAYMENT;
     }
 
-    public PaymentAttempt addAttempt(String idempotencyKey, BankScenario scenario) {
-        PaymentAttempt attempt = new PaymentAttempt(this, idempotencyKey, scenario);
+    public PaymentAttempt addAttempt(String idempotencyKey, BankScenario scenario, String bankCode) {
+        PaymentAttempt attempt = new PaymentAttempt(this, idempotencyKey, scenario, bankCode);
         attempts.add(attempt);
         return attempt;
     }

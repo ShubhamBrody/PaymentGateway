@@ -70,7 +70,7 @@ class ApiControllersTests {
     private static final PaymentResponse PAYMENT = payment(PaymentStatus.AWAITING_PAYMENT);
     private static final String REQUEST_KEY = "request-key-0001";
     private static final PaymentAttemptResponse PENDING_ATTEMPT = new PaymentAttemptResponse(
-            ATTEMPT_ID, PAYMENT_ID, REQUEST_KEY, BankScenario.APPROVE, PaymentAttemptStatus.PENDING,
+            ATTEMPT_ID, PAYMENT_ID, REQUEST_KEY, BankScenario.APPROVE, "BANK01", PaymentAttemptStatus.PENDING,
             null, null, 1, null, CREATED_AT, null);
 
     @Autowired
@@ -296,7 +296,7 @@ class ApiControllersTests {
     @CsvSource({"false, false", "true, true"})
     void paymentRequestIsAcceptedWithStatusLocation(boolean replayed, String replayedHeader) throws Exception {
         when(paymentRequestService.submit(
-                MERCHANT_ID, PAYMENT_ID, REQUEST_KEY, new CreatePaymentAttemptRequest(BankScenario.APPROVE)))
+                MERCHANT_ID, PAYMENT_ID, REQUEST_KEY, new CreatePaymentAttemptRequest(BankScenario.APPROVE, "BANK07")))
                 .thenReturn(new PaymentRequestService.Submission(
                         requestStatus(PaymentAttemptStatus.QUEUED, "database"), replayed));
 
@@ -304,7 +304,7 @@ class ApiControllersTests {
                         .with(merchantJwt())
                         .header("Idempotency-Key", REQUEST_KEY)
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"scenario\":\"APPROVE\"}"))
+                        .content("{\"scenario\":\"APPROVE\",\"bank\":\"BANK07\"}"))
                 .andExpect(status().isAccepted())
                 .andExpect(header().string(HttpHeaders.LOCATION,
                         "/api/v1/payments/" + PAYMENT_ID + "/requests/" + REQUEST_KEY))
@@ -317,6 +317,7 @@ class ApiControllersTests {
     @CsvSource(delimiter = '|', value = {
             "request-key-0001 | {}",
             "request-key-0001 | {\"scenario\":\"UNKNOWN\"}",
+            "request-key-0001 | {\"scenario\":\"APPROVE\",\"bank\":\"bank-7\"}",
             "short | {\"scenario\":\"APPROVE\"}",
             "has:separator-01 | {\"scenario\":\"APPROVE\"}",
             "'' | {\"scenario\":\"APPROVE\"}"
@@ -365,6 +366,7 @@ class ApiControllersTests {
                 List.of(new SystemStatsResponse.QueueStats("payments:requests", 3, 1)),
                 Map.of(PaymentStatus.PROCESSING, 1L),
                 Map.of(PaymentAttemptStatus.QUEUED, 1L),
+                Map.of("BANK07", Map.of(PaymentAttemptStatus.QUEUED, 1L)),
                 0,
                 CREATED_AT));
 
@@ -372,7 +374,19 @@ class ApiControllersTests {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.queues[0].stream").value("payments:requests"))
                 .andExpect(jsonPath("$.queues[0].pending").value(1))
-                .andExpect(jsonPath("$.payments.PROCESSING").value(1));
+                .andExpect(jsonPath("$.payments.PROCESSING").value(1))
+                .andExpect(jsonPath("$.attemptsByBank.BANK07.QUEUED").value(1));
+    }
+
+    @Test
+    void simulatedBanksAreListedWithTheirProfiles() throws Exception {
+        mockMvc.perform(get("/api/v1/simulator/banks").with(merchantJwt()))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.length()").value(30))
+                .andExpect(jsonPath("$[0].code").value("BANK01"))
+                .andExpect(jsonPath("$[29].code").value("BANK30"))
+                .andExpect(jsonPath("$[0].approveDelayMillis").isNumber())
+                .andExpect(jsonPath("$[0].declineRate").isNumber());
     }
 
     @Test
@@ -436,7 +450,7 @@ class ApiControllersTests {
 
     private static PaymentRequestStatusResponse requestStatus(PaymentAttemptStatus status, String source) {
         return new PaymentRequestStatusResponse(
-                ATTEMPT_ID, PAYMENT_ID, REQUEST_KEY, BankScenario.APPROVE, status, null, 1,
+                ATTEMPT_ID, PAYMENT_ID, REQUEST_KEY, BankScenario.APPROVE, "BANK01", status, null, 1,
                 status == PaymentAttemptStatus.SUCCEEDED ? "RCPT-0123456789AB" : null, CREATED_AT, source);
     }
 }

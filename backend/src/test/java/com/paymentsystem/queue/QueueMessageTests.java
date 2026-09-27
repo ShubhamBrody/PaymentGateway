@@ -24,7 +24,7 @@ class QueueMessageTests {
     @Test
     void bankRequestRoundTripsAndUsesTheSameKeyForEveryRetry() {
         BankRequest request = new BankRequest(
-                BankRequest.bankKey(PAYMENT_ID, "request-key-1"), ATTEMPT_ID, PAYMENT_ID, 1000, "INR",
+                BankRequest.bankKey(PAYMENT_ID, "request-key-1"), ATTEMPT_ID, PAYMENT_ID, "BANK07", 1000, "INR",
                 BankScenario.TIMEOUT_THEN_APPROVE);
 
         assertThat(BankRequest.fromFields(request.toFields())).isEqualTo(request);

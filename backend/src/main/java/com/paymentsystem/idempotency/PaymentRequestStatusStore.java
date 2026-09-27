@@ -42,6 +42,7 @@ public class PaymentRequestStatusStore {
         put(args, "merchantId", status.merchantId());
         put(args, "idempotencyKey", status.idempotencyKey());
         put(args, "scenario", status.scenario());
+        put(args, "bank", status.bank());
         put(args, "status", status.status());
         put(args, "declineReason", status.declineReason());
         put(args, "bankRequestCount", status.bankRequestCount());
@@ -64,6 +65,7 @@ public class PaymentRequestStatusStore {
                 UUID.fromString(text(fields, "merchantId")),
                 text(fields, "idempotencyKey"),
                 BankScenario.valueOf(text(fields, "scenario")),
+                text(fields, "bank"),
                 PaymentAttemptStatus.valueOf(text(fields, "status")),
                 text(fields, "declineReason"),
                 Integer.parseInt(text(fields, "bankRequestCount")),

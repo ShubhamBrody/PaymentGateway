@@ -89,8 +89,10 @@ class PaymentSystemEndToEndTests {
         PaymentResponse payment = createPayment(token, 125_000);
         String key = "checkout-" + UUID.randomUUID();
 
-        ResponseEntity<PaymentRequestStatusResponse> accepted = submit(token, payment.id(), key, BankScenario.APPROVE);
-        ResponseEntity<PaymentRequestStatusResponse> retried = submit(token, payment.id(), key, BankScenario.APPROVE);
+        ResponseEntity<PaymentRequestStatusResponse> accepted =
+                submit(token, payment.id(), key, BankScenario.APPROVE, "BANK12");
+        ResponseEntity<PaymentRequestStatusResponse> retried =
+                submit(token, payment.id(), key, BankScenario.APPROVE, "BANK12");
 
         assertThat(accepted.getStatusCode()).isEqualTo(HttpStatus.ACCEPTED);
         assertThat(accepted.getHeaders().getFirst("Idempotent-Replayed")).isEqualTo("false");
@@ -104,6 +106,7 @@ class PaymentSystemEndToEndTests {
                 status -> status.status().isFinal());
 
         assertThat(finalStatus.status()).isEqualTo(PaymentAttemptStatus.SUCCEEDED);
+        assertThat(finalStatus.bank()).isEqualTo("BANK12");
         ReceiptResponse receipt = get(token, "/api/v1/payments/" + payment.id() + "/receipt", ReceiptResponse.class);
         assertThat(receipt.receiptNumber()).isEqualTo(finalStatus.receiptNumber()).matches("RCPT-[0-9A-F]{12}");
         assertThat(receipt.amount()).isEqualTo(125_000);
@@ -134,8 +137,11 @@ class PaymentSystemEndToEndTests {
                         if (scenario == BankScenario.NO_REPLY) {
                             scenario = BankScenario.RANDOM;
                         }
-                        ResponseEntity<PaymentRequestStatusResponse> first = submit(token, paymentId, key, scenario);
-                        ResponseEntity<PaymentRequestStatusResponse> retry = submit(token, paymentId, key, scenario);
+                        String bank = "BANK%02d".formatted(1 + p % 30);
+                        ResponseEntity<PaymentRequestStatusResponse> first =
+                                submit(token, paymentId, key, scenario, bank);
+                        ResponseEntity<PaymentRequestStatusResponse> retry =
+                                submit(token, paymentId, key, scenario, bank);
                         assertThat(retry.getBody().attemptId()).isEqualTo(first.getBody().attemptId());
                         paymentIds.add(paymentId);
                     }
@@ -167,6 +173,7 @@ class PaymentSystemEndToEndTests {
                         .filter(queue -> !queue.stream().equals("payments:dead-letters"))
                         .allMatch(queue -> queue.length() == 0 && queue.pending() == 0));
         assertThat(stats.receipts()).isEqualTo(stats.payments().get(PaymentStatus.SUCCEEDED));
+        assertThat(stats.attemptsByBank()).containsKeys("BANK01", "BANK12");
     }
 
     private String signUpAndLogIn() {
@@ -192,11 +199,11 @@ class PaymentSystemEndToEndTests {
     }
 
     private ResponseEntity<PaymentRequestStatusResponse> submit(
-            String token, UUID paymentId, String key, BankScenario scenario) {
+            String token, UUID paymentId, String key, BankScenario scenario, String bank) {
         return http.post().uri("/api/v1/payments/{paymentId}/attempts", paymentId)
                 .header(HttpHeaders.AUTHORIZATION, "Bearer " + token)
                 .header("Idempotency-Key", key)
-                .body(new CreatePaymentAttemptRequest(scenario))
+                .body(new CreatePaymentAttemptRequest(scenario, bank))
                 .retrieve()
                 .toEntity(PaymentRequestStatusResponse.class);
     }

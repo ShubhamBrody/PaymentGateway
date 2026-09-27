@@ -83,10 +83,10 @@ class RepositoryTests {
     @Test
     void attemptLookupsFollowThePaymentAndMerchant() {
         Payment payment = payment(merchant, "key-1");
-        PaymentAttempt declined = payment.addAttempt("request-key-1", BankScenario.DECLINE);
+        PaymentAttempt declined = payment.addAttempt("request-key-1", BankScenario.DECLINE, "BANK01");
         paymentRepository.saveAndFlush(payment);
         PaymentAttempt pending = paymentAttemptRepository.saveAndFlush(
-                payment.addAttempt("request-key-2", BankScenario.APPROVE));
+                payment.addAttempt("request-key-2", BankScenario.APPROVE, "BANK01"));
 
         assertThat(paymentAttemptRepository.findByPaymentIdOrderByCreatedAtAsc(payment.getId()))
                 .containsExactly(declined, pending);
@@ -103,11 +103,11 @@ class RepositoryTests {
     @Test
     void recoveryQueriesFindOnlyStaleAttempts() {
         Payment payment = payment(merchant, "key-1");
-        PaymentAttempt staleQueued = payment.addAttempt("request-key-1", BankScenario.APPROVE);
+        PaymentAttempt staleQueued = payment.addAttempt("request-key-1", BankScenario.APPROVE, "BANK01");
         staleQueued.setLastQueuedAt(Instant.now().minusSeconds(60));
-        PaymentAttempt freshQueued = payment.addAttempt("request-key-2", BankScenario.APPROVE);
+        PaymentAttempt freshQueued = payment.addAttempt("request-key-2", BankScenario.APPROVE, "BANK01");
         freshQueued.setLastQueuedAt(Instant.now());
-        PaymentAttempt stalePending = payment.addAttempt("request-key-3", BankScenario.APPROVE);
+        PaymentAttempt stalePending = payment.addAttempt("request-key-3", BankScenario.APPROVE, "BANK01");
         stalePending.setStatus(PaymentAttemptStatus.PENDING);
         stalePending.setLastSentToBankAt(Instant.now().minusSeconds(60));
         paymentRepository.saveAndFlush(payment);
