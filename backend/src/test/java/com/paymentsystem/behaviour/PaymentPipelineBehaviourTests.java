@@ -106,10 +106,7 @@ class PaymentPipelineBehaviourTests {
 
     @BeforeEach
     void freshQueuesAndPayment() {
-        redis.execute((RedisCallback<Void>) connection -> {
-            connection.serverCommands().flushAll();
-            return null;
-        });
+        wipeRedis();
         queueWorkers.createGroups();
         merchantId = authService.register(new RegisterRequest(
                 "Behaviour Store", "merchant-" + UUID.randomUUID() + "@example.com", "correct-horse-battery-staple"))
@@ -336,6 +333,53 @@ class PaymentPipelineBehaviourTests {
         assertThat(fromDatabase.source()).isEqualTo("database");
         assertThat(fromCache.source()).isEqualTo("cache");
         assertThat(fromCache.attemptId()).isEqualTo(fromDatabase.attemptId());
+    }
+
+    @Test
+    @DisplayName("After Redis restarts without its data, workers recreate their groups and finish the payment from H2")
+    void workersRecoverWhenRedisComesBackEmpty() throws Exception {
+        submit("request-redis-wiped", BankScenario.APPROVE);
+        wipeRedis();
+
+        Thread.sleep(PAST_IDLE_TIMEOUT);
+        queueWorkers.runMaintenance();
+
+        assertThat(streamLength(Queues.PAYMENT_REQUESTS)).isEqualTo(1);
+        driveUntilFinal("request-redis-wiped", false);
+        assertThat(attempt("request-redis-wiped").getStatus()).isEqualTo(PaymentAttemptStatus.SUCCEEDED);
+        assertThat(paymentRequestService.getStatus(merchantId, paymentId, "request-redis-wiped").status())
+                .isEqualTo(PaymentAttemptStatus.SUCCEEDED);
+    }
+
+    @Test
+    @DisplayName("A cached status that missed a later update is corrected from the database")
+    void aStaleCachedStatusIsCorrectedFromTheDatabase() {
+        submit("request-stale-cache", BankScenario.APPROVE);
+        driveUntilFinal("request-stale-cache", false);
+        PaymentAttempt attempt = attempt("request-stale-cache");
+        // As if Redis was restored from an older snapshot: the final status is gone and PENDING is back.
+        redis.delete(PaymentRequestStatusStore.key(paymentId, "request-stale-cache"));
+        statusStore.save(new PaymentRequestStatus(
+                attempt.getId(), paymentId, merchantId, "request-stale-cache", BankScenario.APPROVE,
+                PaymentAttemptStatus.PENDING, null, 1, null, attempt.getVersion() - 1, Instant.now().minusSeconds(10)));
+
+        PaymentRequestStatusResponse corrected =
+                paymentRequestService.getStatus(merchantId, paymentId, "request-stale-cache");
+        PaymentRequestStatusResponse cachedAgain =
+                paymentRequestService.getStatus(merchantId, paymentId, "request-stale-cache");
+
+        assertThat(corrected.status()).isEqualTo(PaymentAttemptStatus.SUCCEEDED);
+        assertThat(corrected.source()).isEqualTo("database");
+        assertThat(cachedAgain.status()).isEqualTo(PaymentAttemptStatus.SUCCEEDED);
+        assertThat(cachedAgain.source()).isEqualTo("cache");
+    }
+
+    // Loses everything Redis holds: queues, consumer groups, pending messages, and cached statuses.
+    private void wipeRedis() {
+        redis.execute((RedisCallback<Void>) connection -> {
+            connection.serverCommands().flushAll();
+            return null;
+        });
     }
 
     private UUID newPayment() {

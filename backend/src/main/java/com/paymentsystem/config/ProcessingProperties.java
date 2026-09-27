@@ -19,5 +19,7 @@ public record ProcessingProperties(
         @NotNull Duration requeueAfter,
         @NotNull Duration bankReplyTimeout,
         @Min(1) int maxBankRequests,
-        @NotNull Duration statusTtl) {
+        @NotNull Duration statusTtl,
+        @NotNull Duration statusRecheckAfter,
+        @NotNull Duration redisRetryAfter) {
 }

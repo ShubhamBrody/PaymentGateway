@@ -60,6 +60,10 @@ app:
     bank-reply-timeout: 8s
     max-bank-requests: 3
     status-ttl: 24h
+    # A cached status that is not final is read again from the database after this long, in case Redis lost an update.
+    status-recheck-after: 2s
+    # After a Redis error, the API answers from the database for this long before it tries Redis again.
+    redis-retry-after: 5s
   bank:
     simulator-enabled: ${BANK_SIMULATOR_ENABLED:true}
     approve-delay: 300ms

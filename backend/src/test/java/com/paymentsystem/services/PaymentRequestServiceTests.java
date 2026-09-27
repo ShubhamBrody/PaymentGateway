@@ -3,15 +3,19 @@ package com.paymentsystem.services;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.argThat;
 import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
+import com.paymentsystem.config.ProcessingProperties;
 import com.paymentsystem.dtos.CreatePaymentAttemptRequest;
+import com.paymentsystem.dtos.PaymentRequestStatusResponse;
 import com.paymentsystem.exceptions.ConflictException;
 import com.paymentsystem.exceptions.ResourceNotFoundException;
 import com.paymentsystem.idempotency.PaymentRequestStatus;
@@ -27,6 +31,7 @@ import com.paymentsystem.repositories.PaymentAttemptRepository;
 import com.paymentsystem.repositories.PaymentRepository;
 import com.paymentsystem.repositories.ReceiptRepository;
 import com.paymentsystem.support.RecordingTransactionManager;
+import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
@@ -63,6 +68,10 @@ class PaymentRequestServiceTests {
     private PaymentRequestStatusStore statusStore;
 
     private final List<String> events = new ArrayList<>();
+    private final ProcessingProperties properties = new ProcessingProperties(
+            false, 1, 50, Duration.ofMillis(50), Duration.ofSeconds(1), Duration.ofSeconds(15), 5,
+            Duration.ofSeconds(15), Duration.ofSeconds(8), 3, Duration.ofHours(24), Duration.ofSeconds(2),
+            Duration.ofSeconds(5));
     private PaymentRequestService service;
     private Merchant merchant;
     private Payment payment;
@@ -71,7 +80,7 @@ class PaymentRequestServiceTests {
     void setUp() {
         service = new PaymentRequestService(
                 paymentRepository, attemptRepository, receiptRepository, paymentQueue, statusStore,
-                new TransactionTemplate(new RecordingTransactionManager(events)));
+                new TransactionTemplate(new RecordingTransactionManager(events)), properties);
         merchant = withId(new Merchant("Demo Store", "merchant@example.com", "hash"));
         payment = withId(new Payment(merchant, 1000, "INR", null, null, "payment-key"));
         lenient().when(paymentRepository.findForUpdateByIdAndMerchantId(payment.getId(), merchant.getId()))
@@ -145,6 +154,52 @@ class PaymentRequestServiceTests {
     }
 
     @Test
+    void nonFinalCopyThatIsNoLongerRecentIsReadAgainFromTheDatabase() {
+        when(statusStore.find(payment.getId(), REQUEST_KEY)).thenReturn(Optional.of(
+                cached(merchant.getId(), PaymentAttemptStatus.PENDING, Instant.now().minusSeconds(10))));
+        PaymentAttempt attempt = withId(payment.addAttempt(REQUEST_KEY, BankScenario.APPROVE));
+        attempt.setStatus(PaymentAttemptStatus.DECLINED);
+        when(attemptRepository.findByPaymentIdAndIdempotencyKeyAndPaymentMerchantId(
+                payment.getId(), REQUEST_KEY, merchant.getId())).thenReturn(Optional.of(attempt));
+
+        PaymentRequestStatusResponse status = service.getStatus(merchant.getId(), payment.getId(), REQUEST_KEY);
+
+        assertThat(status.status()).isEqualTo(PaymentAttemptStatus.DECLINED);
+        assertThat(status.source()).isEqualTo("database");
+        verify(statusStore).save(argThat(saved -> saved.status() == PaymentAttemptStatus.DECLINED));
+    }
+
+    @Test
+    void finalCopyIsServedFromRedisHoweverOldItIs() {
+        when(statusStore.find(payment.getId(), REQUEST_KEY)).thenReturn(Optional.of(
+                cached(merchant.getId(), PaymentAttemptStatus.SUCCEEDED, Instant.now().minus(Duration.ofHours(1)))));
+
+        PaymentRequestStatusResponse status = service.getStatus(merchant.getId(), payment.getId(), REQUEST_KEY);
+
+        assertThat(status.status()).isEqualTo(PaymentAttemptStatus.SUCCEEDED);
+        assertThat(status.source()).isEqualTo("cache");
+        verifyNoInteractions(attemptRepository);
+    }
+
+    @Test
+    void afterARedisErrorRequestsSkipRedisForAWhile() {
+        when(statusStore.find(payment.getId(), REQUEST_KEY)).thenThrow(new RedisConnectionFailureException("down"));
+        when(attemptRepository.findByPaymentIdAndIdempotencyKeyAndPaymentMerchantId(
+                payment.getId(), REQUEST_KEY, merchant.getId()))
+                .thenAnswer(invocation -> payment.getAttempts().stream().findFirst());
+
+        PaymentRequestService.Submission submission = submit(APPROVE);
+        PaymentRequestStatusResponse status = service.getStatus(merchant.getId(), payment.getId(), REQUEST_KEY);
+
+        assertThat(submission.status().status()).isEqualTo(PaymentAttemptStatus.QUEUED);
+        assertThat(status.status()).isEqualTo(PaymentAttemptStatus.QUEUED);
+        assertThat(status.source()).isEqualTo("database");
+        verify(statusStore, times(1)).find(payment.getId(), REQUEST_KEY);
+        verify(statusStore, never()).save(any());
+        verify(paymentQueue, never()).publishPaymentRequest(any());
+    }
+
+    @Test
     void paymentWithARequestInProgressRejectsANewKey() {
         payment.setStatus(PaymentStatus.PROCESSING);
 
@@ -158,9 +213,13 @@ class PaymentRequestServiceTests {
     }
 
     private PaymentRequestStatus cached(UUID merchantId) {
+        return cached(merchantId, PaymentAttemptStatus.PENDING, Instant.now());
+    }
+
+    private PaymentRequestStatus cached(UUID merchantId, PaymentAttemptStatus status, Instant updatedAt) {
         return new PaymentRequestStatus(
                 UUID.randomUUID(), payment.getId(), merchantId, REQUEST_KEY, BankScenario.APPROVE,
-                PaymentAttemptStatus.PENDING, null, 1, null, 1, Instant.now());
+                status, null, 1, null, 1, updatedAt);
     }
 
     private static <T> T withId(T entity) {

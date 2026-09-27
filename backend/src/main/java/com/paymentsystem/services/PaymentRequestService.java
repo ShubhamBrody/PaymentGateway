@@ -1,5 +1,6 @@
 package com.paymentsystem.services;
 
+import com.paymentsystem.config.ProcessingProperties;
 import com.paymentsystem.dtos.CreatePaymentAttemptRequest;
 import com.paymentsystem.dtos.PaymentAttemptResponse;
 import com.paymentsystem.dtos.PaymentRequestStatusResponse;
@@ -44,6 +45,10 @@ public class PaymentRequestService {
     private final PaymentQueue paymentQueue;
     private final PaymentRequestStatusStore statusStore;
     private final TransactionTemplate transactionTemplate;
+    private final ProcessingProperties properties;
+
+    // Set after a Redis error so the next calls go straight to the database instead of each waiting on Redis.
+    private volatile Instant skipRedisUntil = Instant.MIN;
 
     public Submission submit(
             UUID merchantId, UUID paymentId, String idempotencyKey, CreatePaymentAttemptRequest request) {
@@ -116,31 +121,52 @@ public class PaymentRequestService {
     }
 
     private void publishAfterCommit(PaymentRequestStatus status) {
-        try {
-            paymentQueue.publishPaymentRequest(
-                    new PaymentRequestMessage(status.attemptId(), status.paymentId(), status.idempotencyKey()));
-        } catch (RuntimeException ex) {
-            // Already committed as QUEUED; the recovery job requeues it, so the client still gets 202.
-            log.warn("Could not queue payment request {} yet: {}", status.attemptId(), ex.toString());
+        if (redisAvailable()) {
+            try {
+                paymentQueue.publishPaymentRequest(
+                        new PaymentRequestMessage(status.attemptId(), status.paymentId(), status.idempotencyKey()));
+            } catch (RuntimeException ex) {
+                // Already committed as QUEUED; the recovery job requeues it, so the client still gets 202.
+                redisFailed("Could not queue payment request " + status.attemptId(), ex);
+            }
         }
         cache(status);
     }
 
     private Optional<PaymentRequestStatus> findCached(UUID paymentId, String idempotencyKey) {
+        if (!redisAvailable()) {
+            return Optional.empty();
+        }
         try {
-            return statusStore.find(paymentId, idempotencyKey);
+            // A copy that is not final may be missing an update that Redis lost, so it is trusted only while recent.
+            Instant recheckBefore = Instant.now().minus(properties.statusRecheckAfter());
+            return statusStore.find(paymentId, idempotencyKey)
+                    .filter(status -> status.status().isFinal() || status.updatedAt().isAfter(recheckBefore));
         } catch (RuntimeException ex) {
-            log.warn("Status cache unavailable, reading the database: {}", ex.toString());
+            redisFailed("Status cache unavailable", ex);
             return Optional.empty();
         }
     }
 
     private void cache(PaymentRequestStatus status) {
+        if (!redisAvailable()) {
+            return;
+        }
         try {
             statusStore.save(status);
         } catch (RuntimeException ex) {
-            log.warn("Could not cache status for {}: {}", status.attemptId(), ex.toString());
+            redisFailed("Could not cache status for " + status.attemptId(), ex);
         }
+    }
+
+    private boolean redisAvailable() {
+        return Instant.now().isAfter(skipRedisUntil);
+    }
+
+    private void redisFailed(String problem, RuntimeException ex) {
+        skipRedisUntil = Instant.now().plus(properties.redisRetryAfter());
+        log.warn("{}, answering from the database for the next {} ms: {}",
+                problem, properties.redisRetryAfter().toMillis(), ex.toString());
     }
 
     private static PaymentRequestStatus requireSameRequest(

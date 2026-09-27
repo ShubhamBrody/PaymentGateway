@@ -71,7 +71,8 @@ class PaymentProcessorTests {
     private final List<String> events = new ArrayList<>();
     private final ProcessingProperties properties = new ProcessingProperties(
             false, 1, 50, Duration.ofMillis(50), Duration.ofSeconds(1), Duration.ofSeconds(15), 5,
-            Duration.ofSeconds(15), Duration.ofSeconds(8), 3, Duration.ofHours(24));
+            Duration.ofSeconds(15), Duration.ofSeconds(8), 3, Duration.ofHours(24), Duration.ofSeconds(2),
+            Duration.ofSeconds(5));
 
     private PaymentProcessor processor;
     private Payment payment;
