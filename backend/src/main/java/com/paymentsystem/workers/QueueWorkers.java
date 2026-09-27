@@ -77,7 +77,12 @@ public class QueueWorkers implements SmartLifecycle {
         if (!properties.workersEnabled()) {
             return;
         }
-        createGroups();
+        try {
+            createGroups();
+        } catch (RuntimeException ex) {
+            // The maintenance loop creates the groups once Redis is reachable; the API answers from H2 meanwhile.
+            log.warn("Redis is unavailable, workers will start consuming once it is back: {}", ex.toString());
+        }
         for (Lane lane : activeLanes()) {
             for (int i = 1; i <= properties.workerCount(); i++) {
                 String consumer = instanceId + "-" + lane.stream().replace(':', '-') + "-" + i;
@@ -141,6 +146,8 @@ public class QueueWorkers implements SmartLifecycle {
 
     // Takes over messages that another worker received but never acknowledged, then runs the recovery jobs.
     public void runMaintenance() {
+        // Consumer groups are gone if Redis restarted without its data, and workers cannot read without them.
+        createGroups();
         for (Lane lane : activeLanes()) {
             reclaim(lane);
         }
