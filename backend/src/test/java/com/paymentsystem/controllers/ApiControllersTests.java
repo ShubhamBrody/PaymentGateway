@@ -19,18 +19,24 @@ import com.paymentsystem.dtos.PageResponse;
 import com.paymentsystem.dtos.PaymentAttemptResponse;
 import com.paymentsystem.dtos.PaymentResponse;
 import com.paymentsystem.dtos.RegisterRequest;
-import com.paymentsystem.dtos.SimulatedAttemptRequest;
+import com.paymentsystem.dtos.CreatePaymentAttemptRequest;
+import com.paymentsystem.dtos.PaymentRequestStatusResponse;
+import com.paymentsystem.dtos.ReceiptResponse;
+import com.paymentsystem.dtos.SystemStatsResponse;
 import com.paymentsystem.exceptions.ConflictException;
 import com.paymentsystem.exceptions.InvalidCredentialsException;
 import com.paymentsystem.exceptions.ResourceNotFoundException;
+import com.paymentsystem.models.BankScenario;
 import com.paymentsystem.models.PaymentAttemptStatus;
 import com.paymentsystem.models.PaymentStatus;
 import com.paymentsystem.services.AuthService;
 import com.paymentsystem.services.MerchantService;
 import com.paymentsystem.services.PaymentService;
-import com.paymentsystem.services.SimulatorService;
+import com.paymentsystem.services.PaymentRequestService;
+import com.paymentsystem.services.SystemStatsService;
 import java.time.Instant;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
@@ -62,8 +68,10 @@ class ApiControllersTests {
     private static final String VALID_PAYMENT_JSON =
             "{\"amount\":1000,\"currency\":\"INR\",\"description\":\"Test order\",\"orderReference\":\"order-123\"}";
     private static final PaymentResponse PAYMENT = payment(PaymentStatus.AWAITING_PAYMENT);
+    private static final String REQUEST_KEY = "request-key-0001";
     private static final PaymentAttemptResponse PENDING_ATTEMPT = new PaymentAttemptResponse(
-            ATTEMPT_ID, PAYMENT_ID, PaymentAttemptStatus.PENDING, null, CREATED_AT, null);
+            ATTEMPT_ID, PAYMENT_ID, REQUEST_KEY, BankScenario.APPROVE, PaymentAttemptStatus.PENDING,
+            null, null, 1, null, CREATED_AT, null);
 
     @Autowired
     private MockMvc mockMvc;
@@ -78,7 +86,10 @@ class ApiControllersTests {
     private PaymentService paymentService;
 
     @MockitoBean
-    private SimulatorService simulatorService;
+    private PaymentRequestService paymentRequestService;
+
+    @MockitoBean
+    private SystemStatsService systemStatsService;
 
     @Test
     void registerIsPublicAndReturnsCreatedMerchant() throws Exception {
@@ -141,14 +152,16 @@ class ApiControllersTests {
             "GET, /api/v1/payments/9b8a7c6d-5e4f-4a3b-8c2d-1e0f9a8b7c6d",
             "POST, /api/v1/payments/9b8a7c6d-5e4f-4a3b-8c2d-1e0f9a8b7c6d/cancel",
             "GET, /api/v1/payments/9b8a7c6d-5e4f-4a3b-8c2d-1e0f9a8b7c6d/attempts",
-            "POST, /api/v1/simulator/payments/9b8a7c6d-5e4f-4a3b-8c2d-1e0f9a8b7c6d/attempts",
-            "POST, /api/v1/simulator/payments/9b8a7c6d-5e4f-4a3b-8c2d-1e0f9a8b7c6d/attempts/0a1b2c3d-4e5f-4a6b-9c7d-8e9f0a1b2c3d/succeed",
-            "POST, /api/v1/simulator/payments/9b8a7c6d-5e4f-4a3b-8c2d-1e0f9a8b7c6d/attempts/0a1b2c3d-4e5f-4a6b-9c7d-8e9f0a1b2c3d/decline"
+            "POST, /api/v1/payments/9b8a7c6d-5e4f-4a3b-8c2d-1e0f9a8b7c6d/attempts",
+            "GET, /api/v1/payments/9b8a7c6d-5e4f-4a3b-8c2d-1e0f9a8b7c6d/attempts/0a1b2c3d-4e5f-4a6b-9c7d-8e9f0a1b2c3d",
+            "GET, /api/v1/payments/9b8a7c6d-5e4f-4a3b-8c2d-1e0f9a8b7c6d/requests/request-key-0001",
+            "GET, /api/v1/payments/9b8a7c6d-5e4f-4a3b-8c2d-1e0f9a8b7c6d/receipt",
+            "GET, /api/v1/simulator/stats"
     })
     void merchantEndpointsRequireAuthentication(String method, String path) throws Exception {
         mockMvc.perform(request(HttpMethod.valueOf(method), path))
                 .andExpect(status().isUnauthorized());
-        verifyNoInteractions(merchantService, paymentService, simulatorService);
+        verifyNoInteractions(merchantService, paymentService, paymentRequestService, systemStatsService);
     }
 
     @Test
@@ -279,44 +292,87 @@ class ApiControllersTests {
                 .andExpect(jsonPath("$[0].status").value("PENDING"));
     }
 
+    @ParameterizedTest
+    @CsvSource({"false, false", "true, true"})
+    void paymentRequestIsAcceptedWithStatusLocation(boolean replayed, String replayedHeader) throws Exception {
+        when(paymentRequestService.submit(
+                MERCHANT_ID, PAYMENT_ID, REQUEST_KEY, new CreatePaymentAttemptRequest(BankScenario.APPROVE)))
+                .thenReturn(new PaymentRequestService.Submission(
+                        requestStatus(PaymentAttemptStatus.QUEUED, "database"), replayed));
+
+        mockMvc.perform(post("/api/v1/payments/{paymentId}/attempts", PAYMENT_ID)
+                        .with(merchantJwt())
+                        .header("Idempotency-Key", REQUEST_KEY)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"scenario\":\"APPROVE\"}"))
+                .andExpect(status().isAccepted())
+                .andExpect(header().string(HttpHeaders.LOCATION,
+                        "/api/v1/payments/" + PAYMENT_ID + "/requests/" + REQUEST_KEY))
+                .andExpect(header().string("Idempotent-Replayed", replayedHeader))
+                .andExpect(jsonPath("$.attemptId").value(ATTEMPT_ID.toString()))
+                .andExpect(jsonPath("$.status").value("QUEUED"));
+    }
+
+    @ParameterizedTest
+    @CsvSource(delimiter = '|', value = {
+            "request-key-0001 | {}",
+            "request-key-0001 | {\"scenario\":\"UNKNOWN\"}",
+            "short | {\"scenario\":\"APPROVE\"}",
+            "has:separator-01 | {\"scenario\":\"APPROVE\"}",
+            "'' | {\"scenario\":\"APPROVE\"}"
+    })
+    void paymentRequestRejectsInvalidKeyOrScenario(String idempotencyKey, String body) throws Exception {
+        MockHttpServletRequestBuilder request = post("/api/v1/payments/{paymentId}/attempts", PAYMENT_ID)
+                .with(merchantJwt())
+                .contentType(MediaType.APPLICATION_JSON)
+                .content(body);
+        if (!idempotencyKey.isEmpty()) {
+            request.header("Idempotency-Key", idempotencyKey);
+        }
+
+        mockMvc.perform(request).andExpect(status().isBadRequest());
+        verifyNoInteractions(paymentRequestService);
+    }
+
     @Test
-    void simulateAttemptReturnsCreatedAttempt() throws Exception {
-        when(simulatorService.simulateAttempt(
-                MERCHANT_ID, PAYMENT_ID, new SimulatedAttemptRequest(PaymentAttemptStatus.PENDING)))
-                .thenReturn(PENDING_ATTEMPT);
+    void paymentRequestStatusIsLookedUpByIdempotencyKey() throws Exception {
+        when(paymentRequestService.getStatus(MERCHANT_ID, PAYMENT_ID, REQUEST_KEY))
+                .thenReturn(requestStatus(PaymentAttemptStatus.SUCCEEDED, "cache"));
 
-        mockMvc.perform(post("/api/v1/simulator/payments/{paymentId}/attempts", PAYMENT_ID)
-                        .with(merchantJwt())
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"outcome\":\"PENDING\"}"))
-                .andExpect(status().isCreated())
-                .andExpect(jsonPath("$.id").value(ATTEMPT_ID.toString()))
-                .andExpect(jsonPath("$.status").value("PENDING"));
-    }
-
-    @ParameterizedTest
-    @ValueSource(strings = {"{}", "{\"outcome\":\"UNKNOWN\"}"})
-    void simulateAttemptRequiresKnownOutcome(String body) throws Exception {
-        mockMvc.perform(post("/api/v1/simulator/payments/{paymentId}/attempts", PAYMENT_ID)
-                        .with(merchantJwt())
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content(body))
-                .andExpect(status().isBadRequest());
-        verifyNoInteractions(simulatorService);
-    }
-
-    @ParameterizedTest
-    @CsvSource({"succeed, SUCCEEDED", "decline, DECLINED"})
-    void resolvesPendingAttempt(String action, PaymentAttemptStatus result) throws Exception {
-        PaymentAttemptResponse resolved = new PaymentAttemptResponse(
-                ATTEMPT_ID, PAYMENT_ID, result, null, CREATED_AT, CREATED_AT.plusSeconds(30));
-        when(simulatorService.resolvePendingAttempt(MERCHANT_ID, PAYMENT_ID, ATTEMPT_ID, result)).thenReturn(resolved);
-
-        mockMvc.perform(post("/api/v1/simulator/payments/{paymentId}/attempts/{attemptId}/{action}",
-                        PAYMENT_ID, ATTEMPT_ID, action).with(merchantJwt()))
+        mockMvc.perform(get("/api/v1/payments/{paymentId}/requests/{key}", PAYMENT_ID, REQUEST_KEY)
+                        .with(merchantJwt()))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.status").value(result.name()))
-                .andExpect(jsonPath("$.resolvedAt").value("2026-09-26T10:00:30Z"));
+                .andExpect(jsonPath("$.status").value("SUCCEEDED"))
+                .andExpect(jsonPath("$.receiptNumber").value("RCPT-0123456789AB"))
+                .andExpect(jsonPath("$.source").value("cache"));
+    }
+
+    @Test
+    void receiptIsReturnedForThePayment() throws Exception {
+        when(paymentRequestService.getReceipt(MERCHANT_ID, PAYMENT_ID)).thenReturn(new ReceiptResponse(
+                "RCPT-0123456789AB", PAYMENT_ID, ATTEMPT_ID, 1000, "INR", "BNK-1", CREATED_AT));
+
+        mockMvc.perform(get("/api/v1/payments/{paymentId}/receipt", PAYMENT_ID).with(merchantJwt()))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.receiptNumber").value("RCPT-0123456789AB"))
+                .andExpect(jsonPath("$.amount").value(1000))
+                .andExpect(jsonPath("$.bankReference").value("BNK-1"));
+    }
+
+    @Test
+    void systemStatsAreAvailableToSignedInMerchants() throws Exception {
+        when(systemStatsService.stats()).thenReturn(new SystemStatsResponse(
+                List.of(new SystemStatsResponse.QueueStats("payments:requests", 3, 1)),
+                Map.of(PaymentStatus.PROCESSING, 1L),
+                Map.of(PaymentAttemptStatus.QUEUED, 1L),
+                0,
+                CREATED_AT));
+
+        mockMvc.perform(get("/api/v1/simulator/stats").with(merchantJwt()))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.queues[0].stream").value("payments:requests"))
+                .andExpect(jsonPath("$.queues[0].pending").value(1))
+                .andExpect(jsonPath("$.payments.PROCESSING").value(1));
     }
 
     @Test
@@ -376,5 +432,11 @@ class ApiControllersTests {
     private static PaymentResponse payment(PaymentStatus status) {
         return new PaymentResponse(
                 PAYMENT_ID, 1000, "INR", status, "Test order", "order-123", CREATED_AT, CREATED_AT);
+    }
+
+    private static PaymentRequestStatusResponse requestStatus(PaymentAttemptStatus status, String source) {
+        return new PaymentRequestStatusResponse(
+                ATTEMPT_ID, PAYMENT_ID, REQUEST_KEY, BankScenario.APPROVE, status, null, 1,
+                status == PaymentAttemptStatus.SUCCEEDED ? "RCPT-0123456789AB" : null, CREATED_AT, source);
     }
 }

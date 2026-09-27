@@ -9,10 +9,13 @@ import com.paymentsystem.exceptions.InvalidRequestException;
 import com.paymentsystem.exceptions.ResourceNotFoundException;
 import com.paymentsystem.models.Merchant;
 import com.paymentsystem.models.Payment;
+import com.paymentsystem.models.PaymentAttemptStatus;
 import com.paymentsystem.models.PaymentStatus;
+import com.paymentsystem.models.Receipt;
 import com.paymentsystem.repositories.MerchantRepository;
 import com.paymentsystem.repositories.PaymentAttemptRepository;
 import com.paymentsystem.repositories.PaymentRepository;
+import com.paymentsystem.repositories.ReceiptRepository;
 import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
@@ -34,6 +37,7 @@ public class PaymentService {
     private final MerchantRepository merchantRepository;
     private final PaymentRepository paymentRepository;
     private final PaymentAttemptRepository paymentAttemptRepository;
+    private final ReceiptRepository receiptRepository;
 
     @Transactional
     public PaymentResponse createPayment(UUID merchantId, String idempotencyKey, CreatePaymentRequest request) {
@@ -96,8 +100,12 @@ public class PaymentService {
     @Transactional(readOnly = true)
     public List<PaymentAttemptResponse> listAttempts(UUID merchantId, UUID paymentId) {
         findOwnedPayment(merchantId, paymentId);
+        String receiptNumber = receiptRepository.findByPaymentId(paymentId)
+                .map(Receipt::getReceiptNumber)
+                .orElse(null);
         return paymentAttemptRepository.findByPaymentIdOrderByCreatedAtAsc(paymentId).stream()
-                .map(PaymentAttemptResponse::from)
+                .map(attempt -> PaymentAttemptResponse.from(
+                        attempt, attempt.getStatus() == PaymentAttemptStatus.SUCCEEDED ? receiptNumber : null))
                 .toList();
     }
 

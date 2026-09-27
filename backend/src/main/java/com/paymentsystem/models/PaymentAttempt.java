@@ -12,6 +12,7 @@ import jakarta.persistence.Index;
 import jakarta.persistence.JoinColumn;
 import jakarta.persistence.ManyToOne;
 import jakarta.persistence.Table;
+import jakarta.persistence.UniqueConstraint;
 import jakarta.persistence.Version;
 import java.time.Instant;
 import java.util.UUID;
@@ -22,7 +23,14 @@ import lombok.Setter;
 import org.hibernate.annotations.CreationTimestamp;
 
 @Entity
-@Table(name = "payment_attempts", indexes = @Index(name = "idx_payment_attempts_payment", columnList = "payment_id"))
+@Table(
+        name = "payment_attempts",
+        uniqueConstraints = @UniqueConstraint(
+                name = "uk_payment_attempts_payment_idempotency_key", columnNames = {"payment_id", "idempotency_key"}),
+        indexes = {
+                @Index(name = "idx_payment_attempts_payment", columnList = "payment_id"),
+                @Index(name = "idx_payment_attempts_status", columnList = "status")
+        })
 @Getter
 @NoArgsConstructor(access = AccessLevel.PROTECTED)
 public class PaymentAttempt {
@@ -35,6 +43,13 @@ public class PaymentAttempt {
     @JoinColumn(name = "payment_id", nullable = false, updatable = false)
     private Payment payment;
 
+    @Column(name = "idempotency_key", nullable = false, length = 64, updatable = false)
+    private String idempotencyKey;
+
+    @Enumerated(EnumType.STRING)
+    @Column(nullable = false, length = 30, updatable = false)
+    private BankScenario scenario;
+
     @Setter
     @Enumerated(EnumType.STRING)
     @Column(nullable = false, length = 20)
@@ -43,6 +58,20 @@ public class PaymentAttempt {
     @Setter
     @Column(length = 100)
     private String declineReason;
+
+    @Setter
+    @Column(length = 64)
+    private String bankReference;
+
+    // Every send to the bank, including retries that reuse the same idempotency key.
+    @Setter
+    private int bankRequestCount;
+
+    @Setter
+    private Instant lastQueuedAt;
+
+    @Setter
+    private Instant lastSentToBankAt;
 
     @CreationTimestamp
     @Column(nullable = false, updatable = false)
@@ -55,8 +84,10 @@ public class PaymentAttempt {
     private long version;
 
     // Created through Payment.addAttempt so both sides of the relationship stay in sync.
-    PaymentAttempt(Payment payment, PaymentAttemptStatus status) {
+    PaymentAttempt(Payment payment, String idempotencyKey, BankScenario scenario) {
         this.payment = payment;
-        this.status = status;
+        this.idempotencyKey = idempotencyKey;
+        this.scenario = scenario;
+        this.status = PaymentAttemptStatus.QUEUED;
     }
 }

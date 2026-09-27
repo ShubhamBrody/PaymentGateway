@@ -3,6 +3,16 @@ spring:
     name: payment-system
   profiles:
     default: local
+  threads:
+    virtual:
+      enabled: true
+  data:
+    redis:
+      host: ${REDIS_HOST:localhost}
+      port: ${REDIS_PORT:6379}
+      timeout: 2s
+      repositories:
+        enabled: false
   jpa:
     open-in-view: false
     hibernate:
@@ -37,3 +47,20 @@ app:
       access-token-ttl: ${JWT_ACCESS_TOKEN_TTL:15m}
   cors:
     allowed-origins: ${CORS_ALLOWED_ORIGINS:http://localhost:3000,http://localhost:5173}
+  processing:
+    workers-enabled: ${PAYMENT_WORKERS_ENABLED:true}
+    worker-count: ${PAYMENT_WORKER_COUNT:4}
+    batch-size: 50
+    idle-poll-interval: 50ms
+    maintenance-interval: 1s
+    # A message delivered to a worker but not acknowledged this long is taken over by another worker.
+    reclaim-idle-timeout: 15s
+    max-deliveries: 5
+    requeue-after: 15s
+    bank-reply-timeout: 8s
+    max-bank-requests: 3
+    status-ttl: 24h
+  bank:
+    simulator-enabled: ${BANK_SIMULATOR_ENABLED:true}
+    approve-delay: 300ms
+    slow-delay: 3s

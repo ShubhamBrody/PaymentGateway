@@ -1,13 +1,21 @@
 spring:
   datasource:
-    url: jdbc:h2:mem:payment-system-tests;DB_CLOSE_DELAY=-1
+    url: jdbc:h2:mem:payment-system-tests;DB_CLOSE_DELAY=-1;LOCK_TIMEOUT=10000
     username: sa
     password:
   jpa:
     hibernate:
       ddl-auto: create-drop
 
+# Tests that need Redis import RedisTestContainerConfig and turn these back on.
+management:
+  health:
+    redis:
+      enabled: false
+
 app:
   security:
     jwt:
       secret: test-only-signing-key-not-for-use-outside-automated-tests
+  processing:
+    workers-enabled: false
